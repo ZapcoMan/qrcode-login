@@ -1,0 +1,226 @@
+<template>
+    <el-container class="login-container">
+        <el-card class="login-box" shadow="hover">
+            <div class="login-header">
+                <h2>扫码登录</h2>
+            </div>
+            <div class="login-body">
+                <div v-if="!loggedIn" class="qrcode-area">
+                    <img :src="qrcodeUrl" alt="二维码" class="qrcode-img" />
+                    <div :class="['qrcode-tip', statusClass]">{{ tip }}</div>
+                    <el-button
+                            v-if="expired"
+                            type="primary"
+                            size="small"
+                            @click="refreshQRCode"
+                            class="refresh-btn"
+                    >刷新二维码</el-button>
+                </div>
+                <div v-else class="login-success">
+                    <el-avatar :src="userInfo.avatar" size="large" />
+                    <div class="welcome">
+                        <h3>欢迎回来，{{ userInfo.username }}</h3>
+                        <p>{{ userInfo.email }}</p>
+                    </div>
+                    <el-button type="danger" @click="handleLogout">退出登录</el-button>
+                </div>
+            </div>
+            <div class="login-footer">
+                <p>
+                    如果您没有移动端演示App，
+                    <a href="mobile.html" target="_blank">点击这里</a>打开移动端模拟页面
+                </p>
+            </div>
+        </el-card>
+    </el-container>
+</template>
+
+<script setup>
+    import { ref, reactive, onMounted, watch } from 'vue'
+    import { ElMessage } from 'element-plus'
+    import { generateQRCode } from '@/api/qrcode'
+    import { baseURL } from '@/utils/request.js'
+
+    const qrcodeUrl = ref('')
+    const tip = ref('请使用手机扫描二维码登录')
+    const expired = ref(false)
+    const loggedIn = ref(false)
+    const userInfo = reactive({ username: '', email: '', avatar: '' })
+    let qrcodeId = ''
+    let ws = null
+    let refreshTimer = null
+
+    const statusClass = ref('') // 控制提示文字颜色，比如 scanned/expired 等
+
+    function refreshQRCode() {
+        startGenerate()
+    }
+
+    async function startGenerate() {
+        clearTimeout(refreshTimer)
+        loggedIn.value = false
+        tip.value = '请使用手机扫描二维码登录'
+        expired.value = false
+        statusClass.value = ''
+
+        try {
+            const res = await generateQRCode()
+            qrcodeId = res.data.qrCodeId
+            qrcodeUrl.value = baseURL + `/api/qrcode/image/${qrcodeId}`
+
+            connectWebSocket()
+
+            refreshTimer = setTimeout(refreshQRCode, 120000)
+        } catch (error) {
+            tip.value = '二维码生成失败，请稍后重试'
+            expired.value = true
+            statusClass.value = 'expired'
+            console.error(error)
+        }
+    }
+
+    function connectWebSocket() {
+        if (ws) ws.close()
+
+        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+        ws = new WebSocket(`${protocol}//${location.host}/ws/qrcode`)
+
+        ws.onopen = () => ws.send(JSON.stringify({ qrcodeId }))
+
+        ws.onmessage = ({ data }) => {
+            const msg = JSON.parse(data)
+            if (msg.type === 'STATUS_CHANGE') {
+                switch (msg.status) {
+                    case 'SCANNED':
+                        tip.value = '已扫描，请在手机上确认'
+                        statusClass.value = 'scanned'
+                        break
+                    case 'CONFIRMED':
+                        Object.assign(userInfo, msg.userInfo)
+                        loggedIn.value = true
+                        clearTimeout(refreshTimer)
+                        break
+                    case 'EXPIRED':
+                    case 'CANCELLED':
+                        tip.value = '二维码已失效，请刷新'
+                        expired.value = true
+                        statusClass.value = 'expired'
+                        break
+                }
+            }
+        }
+
+        ws.onerror = () => {
+            ElMessage.error('WebSocket连接异常，请刷新页面重试')
+        }
+
+        ws.onclose = () => {
+            console.log('WebSocket已关闭')
+        }
+    }
+
+    function handleLogout() {
+        loggedIn.value = false
+        startGenerate()
+    }
+
+    onMounted(() => {
+        const stored = localStorage.getItem('userInfo')
+        if (stored) {
+            Object.assign(userInfo, JSON.parse(stored))
+            loggedIn.value = true
+        } else {
+            startGenerate()
+        }
+    })
+
+    watch(loggedIn, val => {
+        if (val) {
+            localStorage.setItem('userInfo', JSON.stringify(userInfo))
+        } else {
+            localStorage.removeItem('userInfo')
+        }
+    })
+</script>
+
+<style scoped>
+    .login-container {
+        height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 20px;
+        background: #f5f7fa;
+    }
+    .login-box {
+        width: 360px;
+        padding: 30px 20px;
+        box-sizing: border-box;
+    }
+    .login-header h2 {
+        text-align: center;
+        font-weight: 600;
+        font-size: 28px;
+        color: #303133;
+        margin-bottom: 20px;
+    }
+    .login-body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+    .qrcode-area {
+        text-align: center;
+    }
+    .qrcode-img {
+        width: 240px;
+        height: 240px;
+        border-radius: 10px;
+        box-shadow: 0 0 8px rgba(0,0,0,0.1);
+        margin-bottom: 12px;
+    }
+    .qrcode-tip {
+        font-size: 14px;
+        color: #909399;
+        margin-bottom: 12px;
+    }
+    .qrcode-tip.scanned {
+        color: #409EFF;
+    }
+    .qrcode-tip.expired {
+        color: #F56C6C;
+    }
+    .refresh-btn {
+        margin-top: 8px;
+    }
+    .login-success {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+    .login-success .el-avatar {
+        margin-bottom: 15px;
+    }
+    .welcome h3 {
+        margin: 0 0 8px 0;
+        font-weight: 600;
+        color: #303133;
+    }
+    .welcome p {
+        margin: 0;
+        color: #606266;
+    }
+    .login-footer {
+        margin-top: 30px;
+        text-align: center;
+        font-size: 13px;
+        color: #909399;
+    }
+    .login-footer a {
+        color: #409EFF;
+        text-decoration: none;
+    }
+    .login-footer a:hover {
+        text-decoration: underline;
+    }
+</style>
